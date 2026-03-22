@@ -24,6 +24,20 @@ import threading
 import time
 import re
 
+# Load .env file so secrets (e.g. OPENAI_API_KEY) are available via os.environ.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(override=True)
+except ImportError:
+    _env_path = os.path.join(os.path.dirname(__file__), ".env")
+    if os.path.exists(_env_path):
+        with open(_env_path) as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line and not _line.startswith("#") and "=" in _line:
+                    _k, _, _v = _line.partition("=")
+                    os.environ.setdefault(_k.strip(), _v.strip())
+
 # Limit ONNX/numpy OpenMP thread pool before those libraries load.
 # Without this, RapidOCR spawns one thread per CPU core on every inference.
 os.environ.setdefault("OMP_NUM_THREADS", "2")
@@ -54,6 +68,12 @@ try:
 except ImportError:
     HAS_TRANSLATE = False
 
+try:
+    from openai import OpenAI as _OpenAI
+    HAS_OPENAI = True
+except ImportError:
+    HAS_OPENAI = False
+
 # ── Configuration ──────────────────────────────────────────────────────────────
 BG_COLOR        = "#1a1a2e"       # Dark navy background
 TEXT_COLOR      = "#e0e0ff"       # Soft lavender-white text
@@ -70,6 +90,8 @@ TRANSLATE_FROM  = "auto"          # Source language (auto-detect)
 TRANSLATE_TO    = "zh-CN"         # Target translation language (zh-CN = Simplified Chinese)
 OCR_INTERVAL    = 2.0             # Seconds between screen captures
 MAX_OCR_WIDTH   = 1280            # Resize captured image to this width before OCR
+OPENAI_API_KEY  = os.environ.get("OPENAI_API_KEY", "")  # Set env var to enable ChatGPT
+OPENAI_MODEL    = "gpt-4o-mini"   # ChatGPT model used by ChatGptTranslator
 # ───────────────────────────────────────────────────────────────────────────────
 
 
@@ -91,7 +113,9 @@ class TranslationOverlay:
         self._last_img_hash = None   # thumbnail hash of previous captured frame
         self._last_raw_text = None   # OCR output of previous cycle
         self._mode = "auto"          # "auto" = continuous loop, "manual" = one-shot
-        self._translator = None      # cached GoogleTranslator instance
+        self._translator = None      # cached translator instance
+        self._engine = "google"      # "google" or "chatgpt" (chatgpt: manual mode only)
+        self._engine_btns = {}       # translator engine toggle buttons
         self._no_change_streak = 0   # consecutive idle cycles for adaptive back-off
 
         self._build_window()
@@ -161,15 +185,20 @@ class TranslationOverlay:
         # Divider
         tk.Frame(inner, bg=BORDER_COLOR, height=1).pack(fill="x", padx=6, pady=(4, 0))
 
-        # ── Control bar ──
+        # ── Single compact bar: Start | Region | Lang | Engine | Mode | Status ──
         ctrl = tk.Frame(inner, bg=BG_COLOR)
-        ctrl.pack(fill="x", padx=8, pady=(5, 2))
+        ctrl.pack(fill="x", padx=8, pady=(5, 4))
 
+        def _sep():
+            tk.Label(ctrl, text="│", bg=BG_COLOR, fg="#333355",
+                     font=(FONT_FAMILY, 7)).pack(side="left", padx=(4, 2))
+
+        # OCR toggle button
         self._toggle_btn = tk.Label(
-            ctrl, text="▶ Start OCR",
+            ctrl, text="▶ Start",
             bg=ACCENT_COLOR, fg="white",
-            font=(FONT_FAMILY, 8, "bold"),
-            padx=8, pady=3, cursor="hand2"
+            font=(FONT_FAMILY, 7, "bold"),
+            padx=6, pady=2, cursor="hand2"
         )
         self._toggle_btn.pack(side="left")
         self._toggle_btn.bind("<Button-1>", lambda _e: self._toggle_ocr())
@@ -178,75 +207,75 @@ class TranslationOverlay:
             bg=ACCENT_COLOR if not self._ocr_running else "#cc4455"
         ))
 
+        # Region button
         region_btn = tk.Label(
-            ctrl, text="⊹ Region",
+            ctrl, text="⊹ Rgn",
             bg="#2a2a4e", fg="#aaaacc",
-            font=(FONT_FAMILY, 8, "bold"),
-            padx=8, pady=3, cursor="hand2"
+            font=(FONT_FAMILY, 7, "bold"),
+            padx=6, pady=2, cursor="hand2"
         )
-        region_btn.pack(side="left", padx=(6, 0))
+        region_btn.pack(side="left", padx=(3, 0))
         region_btn.bind("<Button-1>", lambda _e: self._select_region())
         region_btn.bind("<Enter>", lambda _e: region_btn.config(fg="white"))
         region_btn.bind("<Leave>", lambda _e: region_btn.config(fg="#aaaacc"))
 
-        self._region_lbl = tk.Label(
-            ctrl, text="Full screen",
-            bg=BG_COLOR, fg="#444466",
-            font=(FONT_FAMILY, 7)
-        )
-        self._region_lbl.pack(side="left", padx=(6, 0))
+        _sep()
 
+        # Input language buttons
+        self._lang_btns = {}
+        for code, label in [("en", "EN"), ("fr", "FR"), ("es", "ES")]:
+            btn = tk.Label(
+                ctrl, text=label,
+                bg="#2a2a4e", fg="#aaaacc",
+                font=(FONT_FAMILY, 7, "bold"),
+                padx=5, pady=2, cursor="hand2"
+            )
+            btn.pack(side="left", padx=(3, 0))
+            btn.bind("<Button-1>", lambda _e, c=code: self._set_source_lang(c))
+            self._lang_btns[code] = btn
+
+        _sep()
+
+        # Engine buttons
+        self._engine_btns = {}
+        for eng, label in [("google", "Goog"), ("chatgpt", "GPT")]:
+            btn = tk.Label(
+                ctrl, text=label,
+                bg="#2a2a4e", fg="#aaaacc",
+                font=(FONT_FAMILY, 7, "bold"),
+                padx=5, pady=2, cursor="hand2"
+            )
+            btn.pack(side="left", padx=(3, 0))
+            btn.bind("<Button-1>", lambda _e, e=eng: self._set_engine(e))
+            self._engine_btns[eng] = btn
+
+        _sep()
+
+        # Mode buttons
+        self._mode_btns = {}
+        for mode, label in [("manual", "Manual"), ("auto", "Auto")]:
+            btn = tk.Label(
+                ctrl, text=label,
+                bg="#2a2a4e", fg="#aaaacc",
+                font=(FONT_FAMILY, 7, "bold"),
+                padx=5, pady=2, cursor="hand2"
+            )
+            btn.pack(side="left", padx=(3, 0))
+            btn.bind("<Button-1>", lambda _e, m=mode: self._set_mode(m))
+            self._mode_btns[mode] = btn
+
+        # Status label (right)
         self._status_lbl = tk.Label(
-            ctrl, text="Idle  |  Install: rapidocr-onnxruntime deep-translator Pillow" if not (HAS_PIL and HAS_OCR and HAS_TRANSLATE) else "Idle",
+            ctrl,
+            text="Idle  |  Install: rapidocr-onnxruntime deep-translator Pillow" if not (HAS_PIL and HAS_OCR and HAS_TRANSLATE) else "Idle",
             bg=BG_COLOR, fg="#555577",
             font=(FONT_FAMILY, 7)
         )
         self._status_lbl.pack(side="right")
 
-        # ── Language picker ──
-        lang_bar = tk.Frame(inner, bg=BG_COLOR)
-        lang_bar.pack(fill="x", padx=8, pady=(0, 3))
-
-        tk.Label(
-            lang_bar, text="Input:",
-            bg=BG_COLOR, fg="#555577",
-            font=(FONT_FAMILY, 7)
-        ).pack(side="left")
-
-        self._lang_btns = {}
-        for code, label in [("en", "EN"), ("fr", "FR"), ("es", "ES")]:
-            btn = tk.Label(
-                lang_bar, text=label,
-                bg="#2a2a4e", fg="#aaaacc",
-                font=(FONT_FAMILY, 7, "bold"),
-                padx=6, pady=1, cursor="hand2"
-            )
-            btn.pack(side="left", padx=(4, 0))
-            btn.bind("<Button-1>", lambda _e, c=code: self._set_source_lang(c))
-            self._lang_btns[code] = btn
-
-        self._set_source_lang("en")  # highlight default
-
-        # Mode toggle — right side of the same bar
-        tk.Label(
-            lang_bar, text="Mode:",
-            bg=BG_COLOR, fg="#555577",
-            font=(FONT_FAMILY, 7)
-        ).pack(side="right", padx=(0, 4))
-
-        self._mode_btns = {}
-        for mode, label in [("manual", "Manual"), ("auto", "Auto")]:
-            btn = tk.Label(
-                lang_bar, text=label,
-                bg="#2a2a4e", fg="#aaaacc",
-                font=(FONT_FAMILY, 7, "bold"),
-                padx=6, pady=1, cursor="hand2"
-            )
-            btn.pack(side="right", padx=(0, 4))
-            btn.bind("<Button-1>", lambda _e, m=mode: self._set_mode(m))
-            self._mode_btns[mode] = btn
-
-        self._set_mode("auto")  # highlight default
+        self._set_source_lang("en")
+        self._set_mode("auto")
+        self._set_engine("google")
 
         # ── OCR source text (small, dimmed) ──
         tk.Label(
@@ -301,11 +330,36 @@ class TranslationOverlay:
             else:
                 btn.config(bg="#2a2a4e", fg="#aaaacc")
 
+    def _set_engine(self, engine):
+        """Switch translator engine. ChatGPT is only allowed in manual mode."""
+        if engine == "chatgpt":
+            if self._mode != "manual":
+                return  # silently ignore — button is visually disabled
+            if not HAS_OPENAI:
+                self._set_status("openai package not installed — run: uv pip install openai")
+                return
+            if not OPENAI_API_KEY:
+                self._set_status("OPENAI_API_KEY not set in .env")
+                return
+        self._engine = engine
+        self._translator = None  # invalidate cached translator
+        for e, btn in self._engine_btns.items():
+            if e == "chatgpt" and self._mode != "manual":
+                btn.config(bg="#1a1a2e", fg="#333355")  # grayed out
+            elif e == engine:
+                btn.config(bg="#c47a20" if e == "chatgpt" else ACCENT_COLOR, fg="white")
+            else:
+                btn.config(bg="#2a2a4e", fg="#aaaacc")
+
     def _set_mode(self, mode):
         # Stop any running auto loop when switching modes
         if self._ocr_running and mode != self._mode:
             self._stop_ocr()
         self._mode = mode
+        # ChatGPT not allowed in auto mode — revert to Google
+        if mode == "auto" and self._engine == "chatgpt":
+            self._engine = "google"
+            self._translator = None
         for m, btn in self._mode_btns.items():
             btn.config(bg=ACCENT_COLOR if m == mode else "#2a2a4e",
                        fg="white"       if m == mode else "#aaaacc")
@@ -313,6 +367,9 @@ class TranslationOverlay:
             self._toggle_btn.config(text="◉ Capture", bg="#2a6644")
         else:
             self._toggle_btn.config(text="▶ Start OCR", bg=ACCENT_COLOR)
+        # Refresh engine button states for new mode
+        if self._engine_btns:
+            self._set_engine(self._engine)
 
     # ── OCR loop ─────────────────────────────────────────────────────────────────
     def _toggle_ocr(self):
@@ -416,15 +473,40 @@ class TranslationOverlay:
             return False
         self._last_raw_text = raw_text
 
-        # Translate — reuse cached session; only rebuild when source lang changes
+        # Translate — reuse cached session; only rebuild when source lang/engine changes
         translated = raw_text
         if HAS_TRANSLATE:
             try:
-                if self._translator is None:
-                    self._translator = GoogleTranslator(
-                        source=self._source_lang, target=TRANSLATE_TO
-                    )
-                translated = self._translator.translate(raw_text) or raw_text
+                if self._engine == "chatgpt":
+                    if not HAS_OPENAI:
+                        translated = "[openai package not installed]"
+                    elif not OPENAI_API_KEY:
+                        translated = "[OPENAI_API_KEY not set]"
+                    else:
+                        if self._translator is None:
+                            self._translator = _OpenAI(api_key=OPENAI_API_KEY)
+                        resp = self._translator.chat.completions.create(
+                            model="gpt-4o-mini",
+                            messages=[{
+                                "role": "system",
+                                "content": (
+                                    f"Translate the following text from {self._source_lang} "
+                                    f"to {TRANSLATE_TO}. Return only the translated text, "
+                                    "no explanations."
+                                ),
+                            }, {
+                                "role": "user",
+                                "content": raw_text,
+                            }],
+                            temperature=0.3,
+                        )
+                        translated = resp.choices[0].message.content.strip() or raw_text
+                else:
+                    if self._translator is None:
+                        self._translator = GoogleTranslator(
+                            source=self._source_lang, target=TRANSLATE_TO
+                        )
+                    translated = self._translator.translate(raw_text) or raw_text
             except Exception as ex:
                 self._translator = None  # force rebuild next cycle
                 translated = f"[Translation error: {ex}]"
@@ -525,14 +607,12 @@ class TranslationOverlay:
                     int(x1 * s), int(y1 * s),
                     int(x2 * s), int(y2 * s),
                 )
-                self._region_lbl.config(
-                    text=f"{x1},{y1} → {x2},{y2}  (×{s:.1f})", fg=ACCENT_COLOR
-                )
+                self._set_status(f"Region {x1},{y1}→{x2},{y2} (×{s:.1f})")
             _close()
 
         def on_reset(__):  # noqa: unused event arg
             self._capture_region = None
-            self._region_lbl.config(text="Full screen", fg="#444466")
+            self._set_status("Region: full screen")
             _close()
 
         def _close():
