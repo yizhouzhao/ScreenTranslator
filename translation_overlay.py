@@ -82,8 +82,8 @@ BORDER_COLOR    = "#3a3a6e"       # Subtle border
 ALPHA           = 0.85            # Window transparency (0.0 – 1.0)
 FONT_FAMILY     = "Consolas"      # Monospace for clean look
 FONT_SIZE       = 13
-WIN_WIDTH       = 500
-WIN_HEIGHT      = 320
+WIN_WIDTH       = 550
+WIN_HEIGHT      = 200
 HOTKEY          = "ctrl+shift+h"  # Toggle show/hide
 OCR_LANG        = "en"         # PaddleOCR language: 'japan', 'ch', 'en', etc.
 TRANSLATE_FROM  = "auto"          # Source language (auto-detect)
@@ -264,7 +264,20 @@ class TranslationOverlay:
             btn.bind("<Button-1>", lambda _e, m=mode: self._set_mode(m))
             self._mode_btns[mode] = btn
 
-        # Status label (right)
+        _sep()
+
+        # Word list toggle button (left, always visible)
+        self._word_panel_btn = tk.Label(
+            ctrl, text="Words",
+            bg=ACCENT_COLOR, fg="white",
+            font=(FONT_FAMILY, 7, "bold"),
+            padx=5, pady=2, cursor="hand2"
+        )
+        self._word_panel_btn.pack(side="left", padx=(3, 0))
+        self._word_panel_btn.bind("<Button-1>", lambda _e: self._toggle_word_panel())
+        self._word_panel_visible = True
+
+        # Status label (right, last so it can truncate without pushing other widgets)
         self._status_lbl = tk.Label(
             ctrl,
             text="Idle  |  Install: rapidocr-onnxruntime deep-translator Pillow" if not (HAS_PIL and HAS_OCR and HAS_TRANSLATE) else "Idle",
@@ -277,32 +290,14 @@ class TranslationOverlay:
         self._set_mode("auto")
         self._set_engine("google")
 
-        # ── OCR source text (small, dimmed) ──
-        tk.Label(
-            inner, text=f"OCR  [{OCR_LANG}]",
-            bg=BG_COLOR, fg="#444466",
-            font=(FONT_FAMILY, 7)
-        ).pack(anchor="w", padx=8, pady=(4, 0))
+        self._ocr_text = tk.Text(relief="flat", state="disabled")  # hidden, kept for compat
 
-        self._ocr_text = tk.Text(
-            inner,
-            bg="#0d0d1e", fg="#667788",
-            font=(FONT_FAMILY, 9),
-            relief="flat", wrap="word", height=2,
-            padx=6, pady=4, bd=0,
-            highlightthickness=1,
-            highlightbackground=BORDER_COLOR,
-            state="disabled"
-        )
-        self._ocr_text.pack(fill="x", padx=8)
-        self._ocr_text.bind("<Button-1>", lambda e: self.root.after(10, lambda: self._on_word_click(e, TRANSLATE_TO)))
-
-        # ── Translation output (main, bright) ──
-        tk.Label(
-            inner, text=f"Translation  [→ {TRANSLATE_TO}]",
-            bg=BG_COLOR, fg=ACCENT_COLOR,
-            font=(FONT_FAMILY, 7, "bold")
-        ).pack(anchor="w", padx=8, pady=(6, 0))
+        # # ── Translation output (main, bright) ──
+        # tk.Label(
+        #     inner, text=f"Translation  [→ {TRANSLATE_TO}]",
+        #     bg=BG_COLOR, fg=ACCENT_COLOR,
+        #     font=(FONT_FAMILY, 7, "bold")
+        # ).pack(anchor="w", padx=8, pady=(6, 0))
 
         self._trans_text = tk.Text(
             inner,
@@ -627,6 +622,16 @@ class TranslationOverlay:
         sel.bind("<Escape>",             lambda _e: _close())
 
     # ── Word panel ───────────────────────────────────────────────────────────────
+    def _toggle_word_panel(self):
+        if self._word_panel_visible:
+            self._word_panel.withdraw()
+            self._word_panel_visible = False
+            self._word_panel_btn.config(bg="#2a2a4e", fg="#555577")
+        else:
+            self._word_panel.deiconify()
+            self._word_panel_visible = True
+            self._word_panel_btn.config(bg=ACCENT_COLOR, fg="white")
+
     def _build_word_panel(self):
         panel = tk.Toplevel(self.root)
         panel.overrideredirect(True)
@@ -809,8 +814,8 @@ class TranslationOverlay:
             inner, text=word,
             bg=BG_COLOR, fg="white",
             font=(FONT_FAMILY, 13, "bold"),
-            padx=14, pady=(10, 2)
-        ).pack()
+            padx=14, pady=6
+        ).pack(pady=(10, 2))
 
         divider = tk.Frame(inner, bg=BORDER_COLOR, height=1)
         divider.pack(fill="x", padx=10)
@@ -820,17 +825,17 @@ class TranslationOverlay:
             inner, text="…",
             bg=BG_COLOR, fg=ACCENT_COLOR,
             font=(FONT_FAMILY, 15),
-            padx=14, pady=(6, 4)
+            padx=14, pady=6
         )
-        result_lbl.pack()
+        result_lbl.pack(pady=(6, 4))
 
         hint = tk.Label(
             inner, text="click to close",
             bg=BG_COLOR, fg="#444466",
             font=(FONT_FAMILY, 6),
-            padx=14, pady=(0, 8)
+            padx=14, pady=4
         )
-        hint.pack()
+        hint.pack(pady=(0, 8))
 
         def close_popup():
             try:
@@ -868,10 +873,15 @@ class TranslationOverlay:
         self.root.bind("<B1-Motion>",     self._on_drag_motion)
 
     def _on_drag_start(self, event):
+        if isinstance(event.widget, tk.Text):
+            self._drag_x = None
+            return
         self._drag_x = event.x_root - self.root.winfo_x()
         self._drag_y = event.y_root - self.root.winfo_y()
 
     def _on_drag_motion(self, event):
+        if self._drag_x is None:
+            return
         x = event.x_root - self._drag_x
         y = event.y_root - self._drag_y
         self.root.geometry(f"+{x}+{y}")
@@ -895,7 +905,7 @@ class TranslationOverlay:
         else:
             self.root.deiconify()
             self.root.attributes("-topmost", True)
-            if self._word_panel:
+            if self._word_panel and self._word_panel_visible:
                 self._word_panel.deiconify()
                 self._word_panel.attributes("-topmost", True)
             self.visible = True
