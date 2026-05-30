@@ -77,14 +77,18 @@ except ImportError:
 # ── Configuration ──────────────────────────────────────────────────────────────
 BG_COLOR        = "#1a1a2e"       # Dark navy background
 TEXT_COLOR      = "#e0e0ff"       # Soft lavender-white text
-ACCENT_COLOR    = "#7c6af7"       # Purple accent
-BORDER_COLOR    = "#3a3a6e"       # Subtle border
+# ACCENT_COLOR    = "#7c6af7"       # Purple accent
+ACCENT_COLOR    = "#ff6688"       # Pink accent for better visibility
+# BORDER_COLOR    = "#3a3a6e"       # Subtle border
+BORDER_COLOR    = "#ff6688"       # Pink border for better visibility
 ALPHA           = 0.85            # Window transparency (0.0 – 1.0)
 FONT_FAMILY     = "Consolas"      # Monospace for clean look
 FONT_SIZE       = 13
 WIN_WIDTH       = 550
 WIN_HEIGHT      = 200
 HOTKEY          = "ctrl+shift+h"  # Toggle show/hide
+CAPTURE_HOTKEY  = "ctrl+shift+t"  # Manual capture (manual mode only)
+REGION_HOTKEY   = "ctrl+shift+r"  # Select capture region (shows window after)
 OCR_LANG        = "en"         # PaddleOCR language: 'japan', 'ch', 'en', etc.
 TRANSLATE_FROM  = "auto"          # Source language (auto-detect)
 TRANSLATE_TO    = "zh-CN"         # Target translation language (zh-CN = Simplified Chinese)
@@ -161,7 +165,7 @@ class TranslationOverlay:
         grip_lbl.pack(side="left", padx=(2, 0))
 
         hint = tk.Label(
-            title_bar, text=f"[{HOTKEY.upper()}] hide",
+            title_bar, text=f"[{HOTKEY.upper()}] hide  [{CAPTURE_HOTKEY.upper()}] capture  [{REGION_HOTKEY.upper()}] region",
             bg=BG_COLOR, fg="#555577",
             font=(FONT_FAMILY, 7)
         )
@@ -493,7 +497,7 @@ class TranslationOverlay:
                                 "role": "user",
                                 "content": raw_text,
                             }],
-                            temperature=0.3,
+                            # temperature=0.3,
                         )
                         translated = resp.choices[0].message.content.strip() or raw_text
                 else:
@@ -895,6 +899,13 @@ class TranslationOverlay:
             )
             return
         keyboard.add_hotkey(HOTKEY, lambda: self.root.after(0, self._toggle_visibility))
+        keyboard.add_hotkey(CAPTURE_HOTKEY, lambda: self.root.after(0, self._hotkey_capture))
+        keyboard.add_hotkey(REGION_HOTKEY,  lambda: self.root.after(0, self._select_region))
+
+    def _hotkey_capture(self):
+        """Trigger a single capture only when in manual mode."""
+        if self._mode == "manual":
+            self._capture_once()
 
     def _toggle_visibility(self):
         if self.visible:
