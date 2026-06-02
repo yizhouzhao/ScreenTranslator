@@ -74,6 +74,12 @@ try:
 except ImportError:
     HAS_OPENAI = False
 
+try:
+    import sounddevice as _sounddevice
+    HAS_SOUNDDEVICE = True
+except ImportError:
+    HAS_SOUNDDEVICE = False
+
 # ── Configuration ──────────────────────────────────────────────────────────────
 BG_COLOR        = "#1a1a2e"       # Dark navy background
 TEXT_COLOR      = "#e0e0ff"       # Soft lavender-white text
@@ -121,6 +127,8 @@ class TranslationOverlay:
         self._engine = "google"      # "google" or "chatgpt" (chatgpt: manual mode only)
         self._engine_btns = {}       # translator engine toggle buttons
         self._no_change_streak = 0   # consecutive idle cycles for adaptive back-off
+        self._current_raw_text = ""  # latest captured text for TTS
+        self._tts_running = False
 
         self._build_window()
         self._build_ui()
@@ -280,6 +288,22 @@ class TranslationOverlay:
         self._word_panel_btn.pack(side="left", padx=(3, 0))
         self._word_panel_btn.bind("<Button-1>", lambda _e: self._toggle_word_panel())
         self._word_panel_visible = True
+
+        _sep()
+
+        # TTS speak button
+        self._speak_btn = tk.Label(
+            ctrl, text="🔊 Speak",
+            bg="#2a2a4e", fg="#aaaacc",
+            font=(FONT_FAMILY, 7, "bold"),
+            padx=5, pady=2, cursor="hand2"
+        )
+        self._speak_btn.pack(side="left", padx=(3, 0))
+        self._speak_btn.bind("<Button-1>", lambda _e: self._speak())
+        self._speak_btn.bind("<Enter>", lambda _e: self._speak_btn.config(fg="white"))
+        self._speak_btn.bind("<Leave>", lambda _e: self._speak_btn.config(
+            fg="white" if self._tts_running else "#aaaacc"
+        ))
 
         # Status label (right, last so it can truncate without pushing other widgets)
         self._status_lbl = tk.Label(
@@ -771,6 +795,7 @@ class TranslationOverlay:
     def _update_display(self, raw_text, translated):
         self._set_text(self._ocr_text, raw_text)
         self._set_text(self._trans_text, translated)
+        self._current_raw_text = raw_text
         self._set_status(f"Updated {time.strftime('%H:%M:%S')}")
         self._schedule_word_update(raw_text)
 
@@ -861,6 +886,54 @@ class TranslationOverlay:
                 popup.after(0, lambda: result_lbl.config(text=text))
 
         threading.Thread(target=do_translate, daemon=True).start()
+
+    # ── Text-to-speech ───────────────────────────────────────────────────────────
+    def _speak(self):
+        """Speak the currently captured raw text via OpenAI TTS (PCM → sounddevice)."""
+        if self._tts_running:
+            return
+        if not HAS_OPENAI:
+            self._set_status("TTS unavailable — run: pip install openai")
+            return
+        if not HAS_SOUNDDEVICE:
+            self._set_status("TTS unavailable — run: pip install sounddevice")
+            return
+        if not OPENAI_API_KEY:
+            self._set_status("OPENAI_API_KEY not set in .env")
+            return
+        text = self._current_raw_text.strip()
+        if not text:
+            self._set_status("No text to speak")
+            return
+
+        self._tts_running = True
+        self._speak_btn.config(bg="#c47a20", fg="white")
+        self._set_status("Speaking…")
+
+        def run_tts():
+            try:
+                client = _OpenAI(api_key=OPENAI_API_KEY)
+                pcm_data = b""
+                with client.audio.speech.with_streaming_response.create(
+                    model="gpt-4o-mini-tts",
+                    voice="coral",
+                    input=text,
+                    response_format="pcm",  # raw 16-bit signed PCM, 24 kHz mono
+                ) as response:
+                    for chunk in response.iter_bytes(4096):
+                        pcm_data += chunk
+                audio = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
+                _sounddevice.play(audio, samplerate=24000)
+                _sounddevice.wait()
+            except Exception as e:
+                err = str(e)
+                self.root.after(0, lambda: self._set_status(f"TTS error: {err}"))
+            finally:
+                self._tts_running = False
+                self.root.after(0, lambda: self._speak_btn.config(bg="#2a2a4e", fg="#aaaacc"))
+                self.root.after(0, lambda: self._set_status(f"Done  {time.strftime('%H:%M:%S')}"))
+
+        threading.Thread(target=run_tts, daemon=True).start()
 
     def _set_text(self, widget, text):
         widget.config(state="normal")

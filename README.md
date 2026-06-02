@@ -10,6 +10,7 @@ and shows the translation in a floating window — designed for language learner
 - Input language selector: English / French / Spanish
 - Word-by-word lookup panel with cached translations
 - Adaptive polling — slows down when screen is idle
+- **🔊 Speak button** — reads captured text aloud via OpenAI TTS (`gpt-4o-mini-tts`)
 - Hotkey `Ctrl+Shift+H` to show/hide
 
 ## Requirements
@@ -26,7 +27,7 @@ uv venv
 .\.venv\Scripts\activate
 
 :: Install dependencies
-uv pip install rapidocr-onnxruntime Pillow numpy deep-translator keyboard
+uv pip install rapidocr-onnxruntime Pillow numpy deep-translator keyboard openai
 ```
 
 > **Note:** Do NOT install `paddlepaddle` or `paddleocr`.
